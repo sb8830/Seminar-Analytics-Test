@@ -1,328 +1,297 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-# ---------------------------------------------------
-# CONFIG
-# ---------------------------------------------------
 st.set_page_config(
-    page_title="Seminar Analytics PRO",
-    page_icon="📊",
+    page_title="Seminar Analytics Dashboard",
     layout="wide"
 )
 
-# ---------------------------------------------------
-# CSS
-# ---------------------------------------------------
-st.markdown("""
-<style>
-.block-container { padding-top: 1rem; }
-.stMetric {
-    background: #f8fafc;
-    padding: 12px;
-    border-radius: 10px;
-    border: 1px solid #e2e8f0;
-}
-</style>
-""", unsafe_allow_html=True)
+st.title("📊 Seminar Analytics Dashboard (Production Version)")
 
-# ---------------------------------------------------
-# TITLE
-# ---------------------------------------------------
-st.title("📊 Seminar Analytics PRO Dashboard")
-st.caption("Conversion • Revenue • ROI • Student Tracking")
+# =========================
+# File Upload
+# =========================
 
-# ---------------------------------------------------
-# FILE UPLOAD
-# ---------------------------------------------------
-col1, col2 = st.columns(2)
+attendee_file = st.file_uploader(
+    "Upload Indepth Attendee File",
+    type=["xlsx", "csv"]
+)
 
-with col1:
-    indepth_file = st.file_uploader(
-        "Upload Indepth Attendee File",
-        type=["xlsx"],
-        key="indepth"
-    )
+seminar_file = st.file_uploader(
+    "Upload Seminar Report File",
+    type=["xlsx", "csv"]
+)
 
-with col2:
-    seminar_file = st.file_uploader(
-        "Upload Seminar Report File",
-        type=["xlsx"],
-        key="seminar"
-    )
-
-if not indepth_file or not seminar_file:
-    st.info("Upload both files to begin.")
+if attendee_file is None:
+    st.warning("Please upload Indepth Attendee File")
     st.stop()
 
+# =========================
+# Load Data
+# =========================
 
-# ---------------------------------------------------
-# LOAD FUNCTIONS (CACHED)
-# ---------------------------------------------------
+@st.cache_data
+def load_file(file):
 
-@st.cache_data(show_spinner=False)
-def load_indepth(file):
+    if file.name.endswith("csv"):
+        df = pd.read_csv(file)
+    else:
+        df = pd.read_excel(file)
 
-    df = pd.read_excel(file, sheet_name=None)
-
-    frames = []
-
-    for name, sheet in df.items():
-
-        sheet.columns = (
-            sheet.columns
-            .str.strip()
-            .str.lower()
-            .str.replace(" ", "_")
-        )
-
-        if "student_name" in sheet.columns:
-            frames.append(sheet)
-
-    df = pd.concat(frames, ignore_index=True)
-
-    numeric_cols = [
-        "payment_received",
-        "total_amount",
-        "total_due",
-        "total_gst"
-    ]
-
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    df.columns = df.columns.str.strip().str.lower()
 
     return df
 
+attendee_df = load_file(attendee_file)
 
-@st.cache_data(show_spinner=False)
-def load_seminar(file):
+if seminar_file:
+    seminar_df = load_file(seminar_file)
+else:
+    seminar_df = pd.DataFrame()
 
-    df = pd.read_excel(file, header=1)
+# =========================
+# Identify Columns Automatically
+# =========================
 
-    df.columns = (
-        df.columns
-        .str.strip()
-        .str.lower()
-        .str.replace("\n", "_")
-        .str.replace(" ", "_")
-    )
+def find_column(df, keywords):
 
-    numeric_cols = [
-        "total_attended",
-        "total_seat_booked_(in_seminar)",
-        "actual_expenses",
-        "actual_revenue(w/o_gst)_attendees",
-        "surplus_or_deficit"
-    ]
+    for col in df.columns:
+        for key in keywords:
+            if key in col:
+                return col
 
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = (
-                pd.to_numeric(
-                    df[col]
-                    .astype(str)
-                    .str.replace(",", ""),
-                    errors="coerce"
-                )
-                .fillna(0)
-            )
-
-    df = df[pd.to_numeric(df["sr_no"], errors="coerce").notna()]
-
-    return df
+    return None
 
 
-# ---------------------------------------------------
-# LOAD DATA
-# ---------------------------------------------------
+phone_col = find_column(attendee_df, ["phone", "mobile", "contact"])
+email_col = find_column(attendee_df, ["email", "mail"])
+name_col = find_column(attendee_df, ["name", "student"])
+payment_col = find_column(attendee_df, ["payment", "amount", "revenue", "paid"])
+seminar_col = find_column(attendee_df, ["seminar", "event", "webinar", "session"])
+trainer_col = find_column(attendee_df, ["trainer", "mentor", "faculty"])
+date_col = find_column(attendee_df, ["date"])
 
-indepth_df = load_indepth(indepth_file)
-seminar_df = load_seminar(seminar_file)
+# =========================
+# Clean Data
+# =========================
 
-# ---------------------------------------------------
-# SIDEBAR FILTERS
-# ---------------------------------------------------
+attendee_df[payment_col] = pd.to_numeric(
+    attendee_df[payment_col],
+    errors="coerce"
+).fillna(0)
 
-st.sidebar.header("Filters")
+# =========================
+# Create Unique Student ID
+# =========================
 
-locations = seminar_df["location"].dropna().unique()
-
-selected_locations = st.sidebar.multiselect(
-    "Location",
-    locations
+attendee_df["student_id"] = (
+    attendee_df[phone_col].astype(str)
+    .replace("nan", "")
 )
 
-profit_filter = st.sidebar.radio(
-    "Profitability",
-    ["All", "Profit", "Loss"]
-)
+attendee_df.loc[
+    attendee_df["student_id"] == "",
+    "student_id"
+] = attendee_df[email_col]
 
-# ---------------------------------------------------
-# FILTER DATA
-# ---------------------------------------------------
+# =========================
+# Create Conversion Flag
+# =========================
 
-filtered = seminar_df
+attendee_df["converted"] = attendee_df[payment_col] > 0
 
-if selected_locations:
-    filtered = filtered[
-        filtered["location"].isin(selected_locations)
-    ]
+# =========================
+# Student Summary
+# =========================
 
-if profit_filter == "Profit":
-    filtered = filtered[
-        filtered["surplus_or_deficit"] > 0
-    ]
+student_summary = attendee_df.groupby("student_id").agg(
 
-if profit_filter == "Loss":
-    filtered = filtered[
-        filtered["surplus_or_deficit"] < 0
-    ]
+    student_name=(name_col, "first"),
+    phone=(phone_col, "first"),
+    email=(email_col, "first"),
+    total_payment=(payment_col, "sum"),
+    converted=("converted", "max"),
+    seminar=(seminar_col, "first"),
+    trainer=(trainer_col, "first")
 
-# ---------------------------------------------------
-# KPI CALCULATIONS (FAST)
-# ---------------------------------------------------
+).reset_index()
 
-total_seminars = len(filtered)
+# =========================
+# KPIs
+# =========================
 
-total_attended = int(
-    filtered["total_attended"].sum()
-)
+total_students = student_summary["student_id"].nunique()
 
-total_revenue = (
-    filtered[
-        "actual_revenue(w/o_gst)_attendees"
-    ].sum()
-)
-
-total_expenses = filtered[
-    "actual_expenses"
-].sum()
-
-profit = filtered[
-    "surplus_or_deficit"
-].sum()
-
-# Conversion rate
-total_indepth = indepth_df[
-    "student_name"
-].nunique()
+converted_students = student_summary["converted"].sum()
 
 conversion_rate = (
-    total_indepth / total_attended * 100
-    if total_attended > 0 else 0
+    converted_students / total_students * 100
+    if total_students else 0
 )
 
-# ---------------------------------------------------
-# KPI DISPLAY
-# ---------------------------------------------------
+total_revenue = student_summary["total_payment"].sum()
 
-st.markdown("---")
+# =========================
+# KPI Dashboard
+# =========================
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
+k1, k2, k3, k4 = st.columns(4)
 
-c1.metric("Seminars", total_seminars)
+k1.metric("Total Students", f"{total_students:,}")
+k2.metric("Converted Students", f"{converted_students:,}")
+k3.metric("Conversion Rate", f"{conversion_rate:.2f}%")
+k4.metric("Total Revenue", f"₹{total_revenue:,.0f}")
 
-c2.metric("Attendees", f"{total_attended:,}")
+st.divider()
 
-c3.metric("Indepth Students", total_indepth)
+# =========================
+# Conversion Funnel
+# =========================
 
-c4.metric("Conversion %", f"{conversion_rate:.1f}%")
+funnel = go.Figure(go.Funnel(
 
-c5.metric("Revenue", f"₹{total_revenue:,.0f}")
+    y=[
+        "Total Students",
+        "Converted Students"
+    ],
 
-c6.metric("Profit", f"₹{profit:,.0f}")
+    x=[
+        total_students,
+        converted_students
+    ]
 
-# ---------------------------------------------------
-# CHARTS
-# ---------------------------------------------------
+))
 
-st.markdown("---")
+st.subheader("Conversion Funnel")
 
-tab1, tab2, tab3 = st.tabs([
-    "Revenue vs Expense",
-    "Conversion Funnel",
-    "Location Performance"
-])
+st.plotly_chart(
+    funnel,
+    use_container_width=True
+)
 
+# =========================
+# Seminar Wise Analytics
+# =========================
 
-# Revenue chart
-with tab1:
+st.subheader("Seminar-wise Performance")
 
-    chart = filtered.groupby("location", as_index=False).agg(
-        revenue=("actual_revenue(w/o_gst)_attendees", "sum"),
-        expense=("actual_expenses", "sum")
+seminar_summary = attendee_df.groupby(seminar_col).agg(
+
+    students=("student_id", "nunique"),
+    converted=("converted", "sum"),
+    revenue=(payment_col, "sum")
+
+).reset_index()
+
+seminar_summary["conversion_rate"] = (
+    seminar_summary["converted"]
+    / seminar_summary["students"]
+    * 100
+)
+
+fig1 = px.bar(
+
+    seminar_summary,
+    x=seminar_col,
+    y="revenue",
+    title="Revenue by Seminar"
+
+)
+
+st.plotly_chart(fig1, use_container_width=True)
+
+# =========================
+# Trainer Wise Analytics
+# =========================
+
+if trainer_col:
+
+    st.subheader("Trainer-wise Performance")
+
+    trainer_summary = attendee_df.groupby(trainer_col).agg(
+
+        students=("student_id", "nunique"),
+        converted=("converted", "sum"),
+        revenue=(payment_col, "sum")
+
+    ).reset_index()
+
+    trainer_summary["conversion_rate"] = (
+        trainer_summary["converted"]
+        / trainer_summary["students"]
+        * 100
     )
 
-    fig = px.bar(
-        chart,
-        x="location",
-        y=["revenue", "expense"],
-        barmode="group"
+    fig2 = px.bar(
+
+        trainer_summary,
+        x=trainer_col,
+        y="revenue",
+        title="Revenue by Trainer"
+
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig2, use_container_width=True)
 
+# =========================
+# Daily Revenue Trend
+# =========================
 
-# Funnel chart
-with tab2:
+if date_col:
 
-    funnel = pd.DataFrame({
+    st.subheader("Revenue Trend")
 
-        "Stage": [
-            "Seminar Attended",
-            "Indepth Joined"
-        ],
-
-        "Count": [
-            total_attended,
-            total_indepth
-        ]
-    })
-
-    fig = px.funnel(
-        funnel,
-        x="Count",
-        y="Stage"
+    attendee_df[date_col] = pd.to_datetime(
+        attendee_df[date_col],
+        errors="coerce"
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    trend = attendee_df.groupby(date_col)[payment_col].sum().reset_index()
 
+    fig3 = px.line(
 
-# Location performance
-with tab3:
+        trend,
+        x=date_col,
+        y=payment_col,
+        title="Daily Revenue Trend"
 
-    chart = filtered.groupby(
-        "location",
-        as_index=False
-    ).agg({
-
-        "total_attended": "sum",
-        "surplus_or_deficit": "sum"
-
-    })
-
-    fig = px.bar(
-        chart,
-        x="location",
-        y="surplus_or_deficit",
-        color="surplus_or_deficit"
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig3, use_container_width=True)
 
+# =========================
+# Student Level Table
+# =========================
 
-# ---------------------------------------------------
-# STUDENT TABLE
-# ---------------------------------------------------
-
-st.markdown("---")
-
-st.subheader("Student Conversion Data")
+st.subheader("Student Conversion Table")
 
 st.dataframe(
-    indepth_df,
-    use_container_width=True,
-    height=400
+    student_summary.sort_values(
+        "total_payment",
+        ascending=False
+    ),
+    use_container_width=True
+)
+
+# =========================
+# Download Clean Report
+# =========================
+
+st.subheader("Download Report")
+
+csv = student_summary.to_csv(index=False)
+
+st.download_button(
+
+    label="Download Student Conversion Report",
+
+    data=csv,
+
+    file_name="student_conversion_report.csv",
+
+    mime="text/csv"
+
 )
