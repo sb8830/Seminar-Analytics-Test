@@ -4,39 +4,27 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-st.set_page_config(
-    page_title="Seminar Analytics Dashboard",
-    layout="wide"
-)
+st.set_page_config(page_title="Advanced Seminar Analytics", layout="wide")
 
-st.title("📊 Seminar Analytics Dashboard (Production Version)")
+st.title("📊 Advanced Seminar Analytics Dashboard (Production Safe)")
 
-# =========================
-# File Upload
-# =========================
+# =============================
+# Upload file
+# =============================
 
-attendee_file = st.file_uploader(
-    "Upload Indepth Attendee File",
-    type=["xlsx", "csv"]
-)
+file = st.file_uploader("Upload Attendee File", type=["xlsx", "csv"])
 
-seminar_file = st.file_uploader(
-    "Upload Seminar Report File",
-    type=["xlsx", "csv"]
-)
-
-if attendee_file is None:
-    st.warning("Please upload Indepth Attendee File")
+if file is None:
     st.stop()
 
-# =========================
-# Load Data
-# =========================
+# =============================
+# Load data safely
+# =============================
 
 @st.cache_data
-def load_file(file):
+def load_data(file):
 
-    if file.name.endswith("csv"):
+    if file.name.endswith(".csv"):
         df = pd.read_csv(file)
     else:
         df = pd.read_excel(file)
@@ -45,253 +33,215 @@ def load_file(file):
 
     return df
 
-attendee_df = load_file(attendee_file)
+df = load_data(file)
 
-if seminar_file:
-    seminar_df = load_file(seminar_file)
-else:
-    seminar_df = pd.DataFrame()
+# =============================
+# Smart column detection
+# =============================
 
-# =========================
-# Identify Columns Automatically
-# =========================
-
-def find_column(df, keywords):
+def find_col(keywords):
 
     for col in df.columns:
         for key in keywords:
             if key in col:
                 return col
-
     return None
 
 
-phone_col = find_column(attendee_df, ["phone", "mobile", "contact"])
-email_col = find_column(attendee_df, ["email", "mail"])
-name_col = find_column(attendee_df, ["name", "student"])
-payment_col = find_column(attendee_df, ["payment", "amount", "revenue", "paid"])
-seminar_col = find_column(attendee_df, ["seminar", "event", "webinar", "session"])
-trainer_col = find_column(attendee_df, ["trainer", "mentor", "faculty"])
-date_col = find_column(attendee_df, ["date"])
+phone_col = find_col(["phone", "mobile", "contact"])
+email_col = find_col(["email", "mail"])
+name_col = find_col(["name", "student"])
+payment_col = find_col(["payment", "amount", "paid", "fees"])
+seminar_col = find_col(["seminar", "event"])
+trainer_col = find_col(["trainer", "faculty", "mentor"])
+date_col = find_col(["date"])
+course_col = find_col(["course", "service"])
+location_col = find_col(["location", "center", "branch", "city"])
+source_col = find_col(["source", "lead", "campaign", "medium"])
 
-# =========================
-# Clean Data
-# =========================
+# =============================
+# Create safe columns
+# =============================
 
-attendee_df[payment_col] = pd.to_numeric(
-    attendee_df[payment_col],
-    errors="coerce"
-).fillna(0)
+if payment_col:
+    df["payment"] = pd.to_numeric(df[payment_col], errors="coerce").fillna(0)
+else:
+    df["payment"] = 0
 
-# =========================
-# Create Unique Student ID
-# =========================
+df["phone"] = df[phone_col].astype(str) if phone_col else ""
+df["email"] = df[email_col].astype(str) if email_col else ""
+df["student_name"] = df[name_col] if name_col else "Unknown"
 
-attendee_df["student_id"] = (
-    attendee_df[phone_col].astype(str)
-    .replace("nan", "")
-)
+df["student_id"] = df["phone"]
+df.loc[df["student_id"] == "", "student_id"] = df["email"]
 
-attendee_df.loc[
-    attendee_df["student_id"] == "",
-    "student_id"
-] = attendee_df[email_col]
+df["converted"] = df["payment"] > 0
 
-# =========================
-# Create Conversion Flag
-# =========================
+# =============================
+# Student summary SAFE
+# =============================
 
-attendee_df["converted"] = attendee_df[payment_col] > 0
+student_summary = df.groupby("student_id").agg(
 
-# =========================
-# Student Summary
-# =========================
-
-student_summary = attendee_df.groupby("student_id").agg(
-
-    student_name=(name_col, "first"),
-    phone=(phone_col, "first"),
-    email=(email_col, "first"),
-    total_payment=(payment_col, "sum"),
-    converted=("converted", "max"),
-    seminar=(seminar_col, "first"),
-    trainer=(trainer_col, "first")
+    student_name=("student_name", "first"),
+    phone=("phone", "first"),
+    email=("email", "first"),
+    total_payment=("payment", "sum"),
+    converted=("converted", "max")
 
 ).reset_index()
 
-# =========================
+# =============================
 # KPIs
-# =========================
+# =============================
 
-total_students = student_summary["student_id"].nunique()
-
+total_students = student_summary.shape[0]
 converted_students = student_summary["converted"].sum()
+revenue = student_summary["total_payment"].sum()
 
 conversion_rate = (
     converted_students / total_students * 100
     if total_students else 0
 )
 
-total_revenue = student_summary["total_payment"].sum()
+# =============================
+# KPI DISPLAY
+# =============================
 
-# =========================
-# KPI Dashboard
-# =========================
+c1, c2, c3, c4 = st.columns(4)
 
-k1, k2, k3, k4 = st.columns(4)
-
-k1.metric("Total Students", f"{total_students:,}")
-k2.metric("Converted Students", f"{converted_students:,}")
-k3.metric("Conversion Rate", f"{conversion_rate:.2f}%")
-k4.metric("Total Revenue", f"₹{total_revenue:,.0f}")
+c1.metric("Total Students", f"{total_students:,}")
+c2.metric("Converted", f"{converted_students:,}")
+c3.metric("Conversion Rate", f"{conversion_rate:.2f}%")
+c4.metric("Revenue", f"₹{revenue:,.0f}")
 
 st.divider()
 
-# =========================
+# =============================
 # Conversion Funnel
-# =========================
-
-funnel = go.Figure(go.Funnel(
-
-    y=[
-        "Total Students",
-        "Converted Students"
-    ],
-
-    x=[
-        total_students,
-        converted_students
-    ]
-
-))
+# =============================
 
 st.subheader("Conversion Funnel")
 
-st.plotly_chart(
-    funnel,
-    use_container_width=True
-)
+fig = go.Figure(go.Funnel(
 
-# =========================
-# Seminar Wise Analytics
-# =========================
+    y=["Leads", "Converted"],
+    x=[total_students, converted_students]
 
-st.subheader("Seminar-wise Performance")
+))
 
-seminar_summary = attendee_df.groupby(seminar_col).agg(
+st.plotly_chart(fig, use_container_width=True)
 
-    students=("student_id", "nunique"),
-    converted=("converted", "sum"),
-    revenue=(payment_col, "sum")
+# =============================
+# Course Analytics
+# =============================
 
-).reset_index()
+if course_col:
 
-seminar_summary["conversion_rate"] = (
-    seminar_summary["converted"]
-    / seminar_summary["students"]
-    * 100
-)
+    st.subheader("Course Analytics")
 
-fig1 = px.bar(
-
-    seminar_summary,
-    x=seminar_col,
-    y="revenue",
-    title="Revenue by Seminar"
-
-)
-
-st.plotly_chart(fig1, use_container_width=True)
-
-# =========================
-# Trainer Wise Analytics
-# =========================
-
-if trainer_col:
-
-    st.subheader("Trainer-wise Performance")
-
-    trainer_summary = attendee_df.groupby(trainer_col).agg(
+    course = df.groupby(course_col).agg(
 
         students=("student_id", "nunique"),
-        converted=("converted", "sum"),
-        revenue=(payment_col, "sum")
+        revenue=("payment", "sum")
 
     ).reset_index()
 
-    trainer_summary["conversion_rate"] = (
-        trainer_summary["converted"]
-        / trainer_summary["students"]
-        * 100
-    )
+    fig = px.bar(course, x=course_col, y="revenue")
 
-    fig2 = px.bar(
+    st.plotly_chart(fig, use_container_width=True)
 
-        trainer_summary,
-        x=trainer_col,
-        y="revenue",
-        title="Revenue by Trainer"
+# =============================
+# Trainer Analytics
+# =============================
 
-    )
+if trainer_col:
 
-    st.plotly_chart(fig2, use_container_width=True)
+    st.subheader("Trainer Analytics")
 
-# =========================
-# Daily Revenue Trend
-# =========================
+    trainer = df.groupby(trainer_col).agg(
+
+        students=("student_id", "nunique"),
+        revenue=("payment", "sum")
+
+    ).reset_index()
+
+    fig = px.bar(trainer, x=trainer_col, y="revenue")
+
+    st.plotly_chart(fig, use_container_width=True)
+
+# =============================
+# Location Analytics
+# =============================
+
+if location_col:
+
+    st.subheader("Location Analytics")
+
+    loc = df.groupby(location_col).agg(
+
+        students=("student_id", "nunique"),
+        revenue=("payment", "sum")
+
+    ).reset_index()
+
+    fig = px.bar(loc, x=location_col, y="revenue")
+
+    st.plotly_chart(fig, use_container_width=True)
+
+# =============================
+# Lead Source Analytics
+# =============================
+
+if source_col:
+
+    st.subheader("Lead Source Analytics")
+
+    source = df.groupby(source_col).agg(
+
+        students=("student_id", "nunique"),
+        revenue=("payment", "sum")
+
+    ).reset_index()
+
+    fig = px.bar(source, x=source_col, y="revenue")
+
+    st.plotly_chart(fig, use_container_width=True)
+
+# =============================
+# Revenue Trend
+# =============================
 
 if date_col:
 
     st.subheader("Revenue Trend")
 
-    attendee_df[date_col] = pd.to_datetime(
-        attendee_df[date_col],
-        errors="coerce"
-    )
+    df["date"] = pd.to_datetime(df[date_col], errors="coerce")
 
-    trend = attendee_df.groupby(date_col)[payment_col].sum().reset_index()
+    trend = df.groupby("date")["payment"].sum().reset_index()
 
-    fig3 = px.line(
+    fig = px.line(trend, x="date", y="payment")
 
-        trend,
-        x=date_col,
-        y=payment_col,
-        title="Daily Revenue Trend"
+    st.plotly_chart(fig, use_container_width=True)
 
-    )
+# =============================
+# Student Table
+# =============================
 
-    st.plotly_chart(fig3, use_container_width=True)
+st.subheader("Student Table")
 
-# =========================
-# Student Level Table
-# =========================
+st.dataframe(student_summary, use_container_width=True)
 
-st.subheader("Student Conversion Table")
-
-st.dataframe(
-    student_summary.sort_values(
-        "total_payment",
-        ascending=False
-    ),
-    use_container_width=True
-)
-
-# =========================
-# Download Clean Report
-# =========================
-
-st.subheader("Download Report")
+# =============================
+# Download
+# =============================
 
 csv = student_summary.to_csv(index=False)
 
 st.download_button(
 
-    label="Download Student Conversion Report",
-
-    data=csv,
-
-    file_name="student_conversion_report.csv",
-
-    mime="text/csv"
-
+    "Download Student Report",
+    csv,
+    "student_report.csv",
+    "text/csv"
 )
