@@ -1,333 +1,315 @@
+# ============================================================
+# ENTERPRISE SEMINAR ANALYTICS DASHBOARD
+# Version: Production Enterprise
+# Author: Raj Analytics System
+# ============================================================
+
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import timedelta
 
-st.set_page_config(page_title="Enterprise Seminar Dashboard", layout="wide")
+st.set_page_config(
+    page_title="Enterprise Seminar Analytics",
+    page_icon="📊",
+    layout="wide"
+)
 
-st.title("🏢 Enterprise Seminar Analytics Dashboard")
+# ============================================================
+# CUSTOM CSS (Attractive UI)
+# ============================================================
 
-# =========================================================
-# Helpers
-# =========================================================
+st.markdown("""
+<style>
 
-def clean_numeric(val):
+.main {
+    background-color: #f8fbff;
+}
 
-    if pd.isna(val):
-        return 0
+.kpi-box {
+    background: linear-gradient(135deg,#667eea,#764ba2);
+    padding: 20px;
+    border-radius: 12px;
+    color: white;
+    text-align: center;
+}
 
-    if isinstance(val,(int,float)):
-        return float(val)
+.metric-card {
+    background: white;
+    padding: 15px;
+    border-radius: 12px;
+    box-shadow: 0px 4px 10px rgba(0,0,0,0.1);
+}
 
-    val=str(val).replace(",","").replace("₹","").replace("%","").strip()
+h1, h2, h3 {
+    color: #1f3b73;
+}
 
-    try:
-        return float(val)
-    except:
-        return 0
+</style>
+""", unsafe_allow_html=True)
 
-
-def parse_pct(val):
-
-    if pd.isna(val):
-        return 0
-
-    val=str(val).replace("%","")
-
-    try:
-        return float(val)
-    except:
-        return 0
-
-
-# =========================================================
-# Load Seminar Report
-# =========================================================
+# ============================================================
+# LOAD DATA
+# ============================================================
 
 @st.cache_data
-def load_seminar(file):
+def load_data():
 
-    df=pd.read_excel(file,header=1)
+    attendee = pd.read_excel("Offline Indepth Details_Attendees_New25-26.xlsx")
+    report = pd.read_excel("Offline Seminar Report-Based On Attendee.xlsx")
 
-    records=[]
+    # Fix header issue
+    report.columns = report.iloc[0]
+    report = report.drop(0)
 
-    for _,row in df.iterrows():
+    # Standardize column names
+    attendee.columns = attendee.columns.str.lower().str.strip()
+    report.columns = report.columns.str.lower().str.strip()
 
-        if pd.isna(row.iloc[0]):
-            continue
-
-        rec={
-
-        "sr_no":int(clean_numeric(row.iloc[0])),
-
-        "trainer":str(row.iloc[1]),
-
-        "location":str(row.iloc[2]).upper(),
-
-        "seminar_date":pd.to_datetime(row.iloc[3],errors="coerce"),
-
-        "batch_date":pd.to_datetime(row.iloc[4],errors="coerce"),
-
-        "targeted":clean_numeric(row.iloc[5]),
-
-        "attended":clean_numeric(row.iloc[10]),
-
-        "seat_booked":clean_numeric(row.iloc[15]),
-
-        "expenses":clean_numeric(row.iloc[20]),
-
-        "revenue":clean_numeric(row.iloc[22]),
-
-        }
-
-        rec["profit"]=rec["revenue"]-rec["expenses"]
-
-        records.append(rec)
-
-    return pd.DataFrame(records)
-
-
-# =========================================================
-# Load Conversion List
-# =========================================================
-
-@st.cache_data
-def load_conversion(file):
-
-    df=pd.read_excel(file)
-
-    df.columns=df.columns.str.lower().str.replace(" ","_")
-
-    if "batch_date" in df.columns:
-
-        df["batch_date"]=pd.to_datetime(df["batch_date"],errors="coerce")
-
-    if "payment_received" in df.columns:
-
-        df["payment_received"]=df["payment_received"].apply(clean_numeric)
-
-    if "total_amount" in df.columns:
-
-        df["total_amount"]=df["total_amount"].apply(clean_numeric)
-
-    return df
-
-
-# =========================================================
-# Match conversions
-# =========================================================
-
-def match_conversion(seminar,conv):
-
-    matches=[]
-
-    for _,c in conv.iterrows():
-
-        if pd.isna(c.get("batch_date")):
-            continue
-
-        seminar["diff"]=(seminar["batch_date"]-c["batch_date"]).abs()
-
-        closest=seminar[seminar["diff"]<=timedelta(days=7)]
-
-        if len(closest)>0:
-
-            best=closest.loc[closest["diff"].idxmin()]
-
-            matches.append({
-
-            "student":c.get("student_name",""),
-
-            "phone":c.get("phone",""),
-
-            "course":c.get("service_name",""),
-
-            "revenue":c.get("total_amount",0),
-
-            "received":c.get("payment_received",0),
-
-            "location":best["location"],
-
-            "trainer":best["trainer"]
-
-            })
-
-    return pd.DataFrame(matches)
-
-
-# =========================================================
-# Upload files
-# =========================================================
-
-col1,col2=st.columns(2)
-
-with col1:
-
-    seminar_file=st.file_uploader(
-    "Upload Seminar Report",
-    type=["xlsx"]
+    # Merge
+    merged = pd.merge(
+        attendee,
+        report,
+        how="left",
+        on="phone",
+        suffixes=("_attendee","_report")
     )
 
-with col2:
-
-    conversion_file=st.file_uploader(
-    "Upload Conversion List",
-    type=["xlsx","xlsb"]
+    # Create student_id
+    merged["student_id"] = (
+        merged["phone"].astype(str)
+        + "_"
+        + merged["student_name"].astype(str)
     )
 
+    return merged
 
-if seminar_file is None:
+merged_df = load_data()
 
-    st.stop()
+# ============================================================
+# FILTER REQUIRED COURSES
+# ============================================================
 
+required_courses = [
+    "Power Of Trading & Investing Combo Course",
+    "Power Of Equity Market Strategy Course (Offline)"
+]
 
-seminar_df=load_seminar(seminar_file)
+merged_df = merged_df[
+    merged_df["course_name"].isin(required_courses)
+]
 
-# =========================================================
-# Filters
-# =========================================================
+# ============================================================
+# SIDEBAR FILTER
+# ============================================================
 
-st.sidebar.header("Filters")
+st.sidebar.title("🎯 Enterprise Filters")
 
-locations=st.sidebar.multiselect(
-"Location",
-seminar_df["location"].unique()
+trainer_list = sorted(
+    merged_df["trainer_name"].dropna().unique()
 )
 
-trainers=st.sidebar.multiselect(
-"Trainer",
-seminar_df["trainer"].unique()
+selected_trainer = st.sidebar.selectbox(
+    "Select Trainer",
+    trainer_list
 )
 
-filtered=seminar_df.copy()
+trainer_df = merged_df[
+    merged_df["trainer_name"] == selected_trainer
+]
 
-if locations:
-    filtered=filtered[filtered["location"].isin(locations)]
+# ============================================================
+# GLOBAL KPIs
+# ============================================================
 
-if trainers:
-    filtered=filtered[filtered["trainer"].isin(trainers)]
+st.title("🚀 Enterprise Seminar Analytics Dashboard")
 
+total_leads = trainer_df["student_id"].nunique()
 
-# =========================================================
-# KPIs
-# =========================================================
+total_attended = trainer_df[
+    trainer_df["attendance_status"] == "Attended"
+]["student_id"].nunique()
 
-total_seminars=len(filtered)
+total_converted = trainer_df[
+    trainer_df["conversion_status"] == "Converted"
+]["student_id"].nunique()
 
-total_attended=filtered["attended"].sum()
-
-total_revenue=filtered["revenue"].sum()
-
-total_profit=filtered["profit"].sum()
-
-k1,k2,k3,k4=st.columns(4)
-
-k1.metric("Total Seminars",total_seminars)
-
-k2.metric("Total Attended",f"{total_attended:,}")
-
-k3.metric("Revenue",f"₹{total_revenue:,.0f}")
-
-k4.metric("Profit",f"₹{total_profit:,.0f}")
-
-
-# =========================================================
-# Revenue vs Expense Chart
-# =========================================================
-
-fig=go.Figure()
-
-fig.add_bar(
-x=filtered["location"],
-y=filtered["expenses"],
-name="Expense"
+conversion_rate = (
+    round(total_converted / total_attended * 100,2)
+    if total_attended > 0 else 0
 )
 
-fig.add_bar(
-x=filtered["location"],
-y=filtered["revenue"],
-name="Revenue"
+total_seminars = trainer_df["seminar_name"].nunique()
+
+hot_leads = trainer_df[
+    (trainer_df["attendance_status"] == "Attended") &
+    (trainer_df["conversion_status"] != "Converted")
+]["student_id"].nunique()
+
+# ============================================================
+# KPI DISPLAY
+# ============================================================
+
+col1,col2,col3,col4,col5,col6 = st.columns(6)
+
+col1.metric("Total Leads", total_leads)
+col2.metric("Total Attended", total_attended)
+col3.metric("Total Converted", total_converted)
+col4.metric("Conversion %", f"{conversion_rate}%")
+col5.metric("Total Seminars", total_seminars)
+col6.metric("Hot Leads", hot_leads)
+
+st.markdown("---")
+
+# ============================================================
+# SEMINAR LEVEL REPORT
+# ============================================================
+
+seminars = trainer_df["seminar_name"].unique()
+
+for seminar in seminars:
+
+    seminar_df = trainer_df[
+        trainer_df["seminar_name"] == seminar
+    ]
+
+    st.subheader(f"📌 Seminar: {seminar}")
+
+    leads = seminar_df["student_id"].nunique()
+
+    attended = seminar_df[
+        seminar_df["attendance_status"] == "Attended"
+    ]["student_id"].nunique()
+
+    converted = seminar_df[
+        seminar_df["conversion_status"] == "Converted"
+    ]["student_id"].nunique()
+
+    conversion = (
+        round(converted / attended * 100,2)
+        if attended > 0 else 0
+    )
+
+    c1,c2,c3,c4 = st.columns(4)
+
+    c1.metric("Leads", leads)
+    c2.metric("Attended", attended)
+    c3.metric("Converted", converted)
+    c4.metric("Conversion %", f"{conversion}%")
+
+    # ========================================================
+    # STUDENT SUMMARY
+    # ========================================================
+
+    student_summary = seminar_df.groupby("student_id").agg(
+
+        student_name=("student_name","first"),
+        phone=("phone","first"),
+        attended=("attendance_status",
+                  lambda x: (x=="Attended").any()),
+
+        converted=("conversion_status",
+                   lambda x: (x=="Converted").any()),
+
+        course=("course_name","first")
+
+    ).reset_index()
+
+    st.dataframe(student_summary, use_container_width=True)
+
+    # ========================================================
+    # FUNNEL CHART
+    # ========================================================
+
+    funnel = go.Figure(go.Funnel(
+        y = ["Leads","Attended","Converted"],
+        x = [leads, attended, converted]
+    ))
+
+    st.plotly_chart(funnel, use_container_width=True)
+
+    # ========================================================
+    # CONVERSION PIE
+    # ========================================================
+
+    pie_df = pd.DataFrame({
+
+        "Status":["Converted","Not Converted"],
+        "Count":[converted, attended-converted]
+
+    })
+
+    pie = px.pie(
+        pie_df,
+        names="Status",
+        values="Count",
+        title="Conversion Distribution"
+    )
+
+    st.plotly_chart(pie, use_container_width=True)
+
+    # ========================================================
+    # HOT LEADS TABLE
+    # ========================================================
+
+    hot = student_summary[
+        (student_summary["attended"] == True) &
+        (student_summary["converted"] == False)
+    ]
+
+    st.write("🔥 Hot Leads")
+    st.dataframe(hot, use_container_width=True)
+
+    st.markdown("---")
+
+# ============================================================
+# OVERALL ANALYTICS
+# ============================================================
+
+st.header("📊 Overall Performance Analytics")
+
+seminar_summary = trainer_df.groupby("seminar_name").agg(
+
+    Leads=("student_id","nunique"),
+
+    Attended=("attendance_status",
+              lambda x: (x=="Attended").sum()),
+
+    Converted=("conversion_status",
+               lambda x: (x=="Converted").sum())
+
+).reset_index()
+
+seminar_summary["Conversion %"] = (
+    seminar_summary["Converted"] /
+    seminar_summary["Attended"] * 100
+).round(2)
+
+bar = px.bar(
+    seminar_summary,
+    x="seminar_name",
+    y="Conversion %",
+    title="Seminar Conversion Comparison",
+    color="Conversion %"
 )
 
-st.plotly_chart(fig,use_container_width=True)
+st.plotly_chart(bar, use_container_width=True)
 
-
-# =========================================================
-# Conversion analytics
-# =========================================================
-
-if conversion_file:
-
-    conv_df=load_conversion(conversion_file)
-
-    match_df=match_conversion(filtered,conv_df)
-
-    if len(match_df)>0:
-
-        st.header("Conversion Analytics")
-
-        total_conv=len(match_df)
-
-        conv_revenue=match_df["revenue"].sum()
-
-        c1,c2=st.columns(2)
-
-        c1.metric("Converted Students",total_conv)
-
-        c2.metric("Conversion Revenue",f"₹{conv_revenue:,.0f}")
-
-
-        # conversion by location
-
-        loc_summary=match_df.groupby("location")["revenue"].sum().reset_index()
-
-        fig=px.bar(
-        loc_summary,
-        x="location",
-        y="revenue",
-        title="Conversion Revenue by Location"
-        )
-
-        st.plotly_chart(fig,use_container_width=True)
-
-
-        # course analysis
-
-        course_summary=match_df.groupby("course")["revenue"].sum().reset_index()
-
-        fig=px.pie(
-        course_summary,
-        names="course",
-        values="revenue",
-        title="Revenue by Course"
-        )
-
-        st.plotly_chart(fig,use_container_width=True)
-
-
-        st.dataframe(match_df,use_container_width=True)
-
-    else:
-
-        st.warning("No conversions matched")
-
-
-# =========================================================
-# Seminar table
-# =========================================================
-
-st.header("Seminar Table")
-
-st.dataframe(filtered,use_container_width=True)
-
-
-# =========================================================
-# Download
-# =========================================================
+# ============================================================
+# DOWNLOAD REPORT
+# ============================================================
 
 st.download_button(
-"Download Report",
-filtered.to_csv(index=False),
-"seminar_report.csv"
+
+    "📥 Download Trainer Report",
+
+    trainer_df.to_csv(index=False),
+
+    file_name=f"{selected_trainer}_report.csv"
+
 )
+
+# ============================================================
+# END
+# ============================================================
